@@ -50,3 +50,6 @@ upgrading from previous versions.
 
 .. __: pg_repack_
 .. _pg_reorg: http://reorg.projects.pgfoundry.org/
+
+Note: This is the unofficial repository
+
