@@ -774,6 +774,7 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 	for (i = 0; i < num; i++)
 	{
 		repack_table	table;
+		StringInfoData	copy_sql;
 		const char *create_table_1;
 		const char *create_table_2;
 		const char *tablespace;
@@ -816,17 +817,27 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		table.sql_pop = getstr(res, i, c++);
 		tablespace = getstr(res, i, c++);
 
+		/* Craft CREATE TABLE SQL */
 		resetStringInfo(&sql);
 		appendStringInfoString(&sql, create_table_1);
 		appendStringInfoString(&sql, tablespace);
 		appendStringInfoString(&sql, create_table_2);
+
+		/* Always append WITH NO DATA to CREATE TABLE SQL*/
+		appendStringInfoString(&sql, " WITH NO DATA");
+		table.create_table = sql.data;
+
+		/* Craft Copy SQL */
+		initStringInfo(&copy_sql);
+		appendStringInfoString(&copy_sql, table.copy_data);
 		if (!orderby)
+
 		{
 			if (ckey != NULL)
 			{
 				/* CLUSTER mode */
-				appendStringInfoString(&sql, " ORDER BY ");
-				appendStringInfoString(&sql, ckey);
+				appendStringInfoString(&copy_sql, " ORDER BY ");
+				appendStringInfoString(&copy_sql, ckey);
 			}
 
 			/* else, VACUUM FULL mode (non-clustered tables) */
@@ -838,13 +849,10 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		else
 		{
 			/* User specified ORDER BY */
-			appendStringInfoString(&sql, " ORDER BY ");
-			appendStringInfoString(&sql, orderby);
+			appendStringInfoString(&copy_sql, " ORDER BY ");
+			appendStringInfoString(&copy_sql, orderby);
 		}
-
-		/* Always append WITH NOT DATA */
-		appendStringInfoString(&sql, " WITH NO DATA");
-		table.create_table = sql.data;
+		table.copy_data = copy_sql.data;
 
 		repack_one_table(&table, orderby);
 	}
@@ -854,6 +862,7 @@ cleanup:
 	CLEARPGRES(res);
 	disconnect();
 	termStringInfo(&sql);
+	free(params);
 	return ret;
 }
 
@@ -1782,6 +1791,12 @@ lock_exclusive(PGconn *conn, const char *relid, const char *lock_query, bool sta
 			{
 				elog(WARNING, "timed out, do not cancel conflicting backends");
 				ret = false;
+
+				/* Before exit the loop reset the transaction */
+				if (start_xact)
+					pgut_rollback(conn);
+				else
+					pgut_command(conn, "ROLLBACK TO SAVEPOINT repack_sp1", 0, NULL);
 				break;
 			}
 			else
@@ -1922,6 +1937,7 @@ repack_table_indexes(PGresult *index_details)
 	params[1] = utoa(table, buffer[1]);
 	params[2] = tablespace;
 	schema_name = getstr(index_details, 0, 5);
+	/* table_name is schema-qualified */
 	table_name = getstr(index_details, 0, 4);
 
 	/* Keep track of which of the table's indexes we have successfully
@@ -1954,7 +1970,7 @@ repack_table_indexes(PGresult *index_details)
 							 "WHERE pgc.relname = 'index_%u' "
 							 "AND nsp.nspname = $1", index);
 			params[0] = schema_name;
-			elog(INFO, "repacking index \"%s\".\"%s\"", schema_name, idx_name);
+			elog(INFO, "repacking index \"%s\"", idx_name);
 			res = execute(sql.data, 1, params);
 			if (PQresultStatus(res) != PGRES_TUPLES_OK)
 			{
@@ -1986,8 +2002,8 @@ repack_table_indexes(PGresult *index_details)
 			if (PQntuples(res) < 1)
 			{
 				elog(WARNING,
-					"unable to generate SQL to CREATE work index for %s.%s",
-					schema_name, getstr(index_details, i, 0));
+					"unable to generate SQL to CREATE work index for %s",
+					getstr(index_details, i, 0));
 				continue;
 			}
 
@@ -2117,7 +2133,7 @@ repack_all_indexes(char *errbuf, size_t errsize)
 	if (r_index.head)
 	{
 		appendStringInfoString(&sql,
-			"SELECT i.relname, idx.indexrelid, idx.indisvalid, idx.indrelid, idx.indrelid::regclass, n.nspname"
+			"SELECT repack.oid2text(i.oid), idx.indexrelid, idx.indisvalid, idx.indrelid, repack.oid2text(idx.indrelid), n.nspname"
 			" FROM pg_index idx JOIN pg_class i ON i.oid = idx.indexrelid"
 			" JOIN pg_namespace n ON n.oid = i.relnamespace"
 			" WHERE idx.indexrelid = $1::regclass ORDER BY indisvalid DESC, i.relname, n.nspname");
@@ -2127,7 +2143,7 @@ repack_all_indexes(char *errbuf, size_t errsize)
 	else if (table_list.head || parent_table_list.head)
 	{
 		appendStringInfoString(&sql,
-			"SELECT i.relname, idx.indexrelid, idx.indisvalid, idx.indrelid, $1::text, n.nspname"
+			"SELECT repack.oid2text(i.oid), idx.indexrelid, idx.indisvalid, idx.indrelid, $1::text, n.nspname"
 			" FROM pg_index idx JOIN pg_class i ON i.oid = idx.indexrelid"
 			" JOIN pg_namespace n ON n.oid = i.relnamespace"
 			" WHERE idx.indrelid = $1::regclass ORDER BY indisvalid DESC, i.relname, n.nspname");

@@ -35,6 +35,7 @@
 #include "storage/lmgr.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
@@ -353,12 +354,47 @@ get_relation_name(Oid relid)
 {
 	Oid		nsp = get_rel_namespace(relid);
 	char   *nspname;
+	char   *strver;
+	int ver;
 
-	/* Qualify the name if not visible in search path */
-	if (RelationIsVisible(relid))
-		nspname = NULL;
+	/* Get the version of the running server (PG_VERSION_NUM would return
+	 * the version we compiled the extension with) */
+	strver = GetConfigOptionByName("server_version_num", NULL
+#if PG_VERSION_NUM >= 90600
+		, false	    /* missing_ok */
+#endif
+	);
+
+	ver = atoi(strver);
+	pfree(strver);
+
+	/*
+	 * Relation names given by PostgreSQL core are always
+	 * qualified since some minor releases. Note that this change
+	 * wasn't introduced in PostgreSQL 9.2 and 9.1 releases.
+	 */
+	if ((ver >= 100000 && ver < 100003) ||
+		(ver >= 90600 && ver < 90608) ||
+		(ver >= 90500 && ver < 90512) ||
+		(ver >= 90400 && ver < 90417) ||
+		(ver >= 90300 && ver < 90322) ||
+		(ver >= 90200 && ver < 90300) ||
+		(ver >= 90100 && ver < 90200))
+	{
+		/* Qualify the name if not visible in search path */
+		if (RelationIsVisible(relid))
+			nspname = NULL;
+		else
+			nspname = get_namespace_name(nsp);
+	}
 	else
-		nspname = get_namespace_name(nsp);
+	{
+		/* Always qualify the name */
+		if (OidIsValid(nsp))
+			nspname = get_namespace_name(nsp);
+		else
+			nspname = NULL;
+	}
 
 	return quote_qualified_identifier(nspname, get_rel_name(relid));
 }
@@ -971,11 +1007,21 @@ repack_drop(PG_FUNCTION_ARGS)
 	 * which in turn, is waiting for lock on log_%u table.
 	 *
 	 * Fixes deadlock mentioned in the Github issue #55.
+	 *
+	 * Skip the lock if we are not going to do anything.
+	 * Otherwise, if repack gets accidentally run twice for the same table
+	 * at the same time, the second repack, in order to perform
+	 * a pointless cleanup, has to wait until the first one completes.
+	 * This adds an ACCESS EXCLUSIVE lock request into the queue
+	 * making the table effectively inaccessible for any other backend.
 	 */
-	execute_with_format(
-		SPI_OK_UTILITY,
-		"LOCK TABLE %s.%s IN ACCESS EXCLUSIVE MODE",
-		nspname, relname);
+	if (numobj > 0)
+	{
+		execute_with_format(
+			SPI_OK_UTILITY,
+			"LOCK TABLE %s.%s IN ACCESS EXCLUSIVE MODE",
+			nspname, relname);
+	}
 
 	/* drop log table: must be done before dropping the pk type,
 	 * since the log table is dependent on the pk type. (That's
@@ -1156,14 +1202,25 @@ swap_heap_or_index_files(Oid r1, Oid r2)
 		relform2->reltuples = swap_tuples;
 	}
 
+	indstate = CatalogOpenIndexes(relRelation);
+
+#if PG_VERSION_NUM < 100000
+
 	/* Update the tuples in pg_class */
 	simple_heap_update(relRelation, &reltup1->t_self, reltup1);
 	simple_heap_update(relRelation, &reltup2->t_self, reltup2);
 
 	/* Keep system catalogs current */
-	indstate = CatalogOpenIndexes(relRelation);
 	CatalogIndexInsert(indstate, reltup1);
 	CatalogIndexInsert(indstate, reltup2);
+
+#else
+
+	CatalogTupleUpdateWithInfo(relRelation, &reltup1->t_self, reltup1, indstate);
+	CatalogTupleUpdateWithInfo(relRelation, &reltup2->t_self, reltup2, indstate);
+
+#endif
+
 	CatalogCloseIndexes(indstate);
 
 	/*

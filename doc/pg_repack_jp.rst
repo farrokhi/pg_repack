@@ -62,7 +62,7 @@ pg_repackでは再編成する方法として次のものが選択できます�
   ------------
   
   PostgreSQL versions
-      PostgreSQL 9.1, 9.2, 9.3, 9.4, 9.5, 9.6
+      PostgreSQL 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 10
   
   Disks
       Performing a full-table repack requires free disk space about twice as
@@ -864,6 +864,35 @@ ACCESS EXCLUSIVEロックを取得します。その他のステップでは、A
 
 リリースノート
 ---------------
+
+.. * pg_repack 1.4.3
+..  * Fixed possible CVE-2018-1058 attack paths (issue #168)
+..  * Fixed "unexpected index definition" after CVE-2018-1058 changes in
+..    PostgreSQL (issue #169)
+..  * Fixed build with recent Ubuntu packages (issue #179)
+
+* pg_repack 1.4.3
+
+  * CVE-2018-1058を利用した攻撃の可能性を修正しました (issue #168)
+  * PostgreSQLでのCVE-2018-1058の修正により"unexpected index definition"エラーが発生する事象を修正しました (issue #169)
+  * 最近のUbuntuパッケージでビルドが失敗する事象を修正しました (issue #179)
+
+.. * pg_repack 1.4.2
+..  * added PostgreSQL 10 support (issue #120)
+..  * fixed error DROP INDEX CONCURRENTLY cannot run inside a transaction block (issue #129)
+
+* pg_repack 1.4.2
+
+  * PostgreSQL 10をサポートしました (issue #120)
+  * エラー「DROP INDEX CONCURRENTLY cannot run inside a transaction block」が発生する事象を修正しました (issue #129)
+
+.. * pg_repack 1.4.1
+..   * fixed broken ``--order-by`` option (issue #138)
+
+* pg_repack 1.4.1
+
+  * 壊れていた ``--order-by`` オプションを修正しました (issue #138)
+
 .. * pg_repack 1.4
 ..   * added support for PostgreSQL 9.6
 ..   * use ``AFTER`` trigger to solve concurrency problems with ``INSERT
